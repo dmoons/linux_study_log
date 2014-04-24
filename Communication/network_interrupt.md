@@ -41,6 +41,54 @@ The following functions control preemption:
 A counter for each process, named preempt_count and embeded in the thread_info structure, indicates whether a given process allows preemption, can be read by `preempt_count`, preemp_count is split into three components, `each  byte is a counter for a different condition that requires nonpreemption`: hardware interrupts(irq_enter, irq_exit), software interrupts(local_bh_disable, local_bh_enable), and general non prermption(preempt_disable, preempt_enable).
 
 
+**Handle bottom-half in kenrel 2.2**
+
+bottom-half types are listed in a enum, take NET_BH as example.  
+Each bottom-half type is associated with a function handler **init_bh**:  
+> init_bh(NET_BH, net_bh)
+
+This initializes the NET_BH bottom-half type to the net_bh handler.   
+Whenever an interrupt handler wants to trigger the execution of a bottom half handler, it has to set the corresponding flag with **mark_bh**, it sets a bit into a global bitmap *bh_active*,
+ 
+> extern inline void mark_bh(int nr)  
+> {  
+> set_bit(nr, &bh_active);   
+> };
+
+Every time a network device driver has successfully received a frame, it 1) signals the kernel about it with a call to *netif_rx*, 2)  netif_rx queues the newly received frame into the ingress queue backlog, and 3) marks the NET_BH bottom-half handler flag.
+
+> skb_queue_tail(&backlog, skb);  
+> mark_bh(NET_BH);  
+> return;  
+
+During several rountine operations, the kernel checks whether any bottom halves are scheduled for execution.
+- do_IRQ : what could give them less latency than an invocation right at the end of do_IRQ?
+- Returns from interrupts and exceptions
+- schedule: This function decides what to execute next on the CPU, checks if any bottom-half handlers are pending and gives them higher priority over other tasks.
+- Bottom halves in 2.2 and earilier kernels suffer fomr a ban on concurrency. Only one bottom half can run at any time, regardless of the number of CPUs.
 
 
+**Softirqs**  
+Which can be seen as tthe multithreaded version of bottom half handlers. Not only can manyu softirqs run concurrently, but also the same softirq can run on different CPUs concurrently.
+*The only restriction on concurrency is that only one instance of each softirq can run at the same time on a CPU*  
+
+Softirq has only 6 types
+- HI_SOFTIRQ  
+- TIMER_SOFRIRQ  
+- NET_TX_SOFTIRQ  
+- NET_RX_SOFTIRQ  
+- SCSI_SOFRIRQ  
+- TASKLET_SOFTIRQ
+
+Each softirq type can maintain an array of data structures of type softnet_data, one per CPU, to hold stata informatoin about the current sofirq. softirq handlers are registered with the open_sofrirq function. open_softirq simply copies the input parameters into the global array *softirq_vec*, declared in kernel/softirq.c, which holds the associations between types and handlers.
+
+A softirq can be scheduled for execution on the local CPU by the following functions:
+- raise_softirq_irqoff : counterpart of mark_bh, simply sets the bit flag associated to the softirq to run, when the flag is checked, the associated handler will be invoked.
+
+**Tasklets**  
+
+Tasklets are built on top of softirqs and are usually kicked off by interrupt handlers.
+HI_SOFTIRQ is used to implement high-priority tasklets, and TASKLET_SOFIRQ is used for lower-priority ones, each time a request for a deferred execution is issued, an instance of a tasklet_struct structure is queued onto either a list processed by HI_SOFTIRQ or another one that is instead processed by TASKLET_SOFTIRQ.
+
+Since softirqs are handled indenpendly by each CPU,it should not be a suprise that there are two lists of pending tasklet_structs for each CPU, one associated with HI_SOFRIRQ and  one with TASKLET_SIFTIRQ
 
